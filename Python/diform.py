@@ -4,18 +4,21 @@ import itertools
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from scipy.special import comb   
+from scipy.special import comb
 from scipy.spatial import ConvexHull
 from matplotlib import pyplot as plt
-import seaborn as sns
-from Snoopy.Statistics import POT_GPD, rolling_declustering
+# import seaborn as sns
+# from Snoopy.Statistics import POT_GPD, rolling_declustering
+from stat_utils import empirical_return_values
+import concurrent.futures as ccf
+from itertools import repeat
 
 
 class _DirectIformABC(  ) :
     """Abstract class for direct IFORM. Subclass are associated to a given univariate method. The univariate approach is implemented in the ._fit() method.
-    
+
     Implementation of the approach described in  https://www.researchgate.net/publication/365459533_Model-free_environmental_contours_in_higher_dimensions
-    
+
     More or less the equivalent of the following matlab code:  https://github.com/edmackay/Direct-IFORM
     """
 
@@ -33,38 +36,38 @@ class _DirectIformABC(  ) :
 
         self._df = df.copy()
         self.npoints = npoints
-        
-        
+
+
         self.dim_names = self._df.columns.values
         self.ndim = len(self.dim_names)
 
-        #--- Normalisation        
+        #--- Normalisation
         self.mean_dict = { k : np.mean( df.loc[ : , k  ] ) for k in self.dim_names  }
         self.std_dict = { k : np.std( df.loc[ : , k  ] ) for k in self.dim_names  }
-        for d in self.dim_names : 
+        for d in self.dim_names :
             self._df[ d + "_a"  ] =  (df[ d  ] - self.mean_dict[ d] ) / self.std_dict[d]
         self.dim_names_a = [n+"_a" for n in self.dim_names]
-        
-        
+
+
         #--- Calculation of direction vectors
         self._direction_vector = direction_vector(self.ndim , self.npoints).rename( columns = { i:n for i, n in enumerate(self.dim_names_a) } )
         self._n_angles = len(self._direction_vector)
         self._res_df = pd.DataFrame( index = self._direction_vector.index, dtype = float )
-        
+
         #-- Initialisation of array containing results of fit for each direction
-        self._fit_objects = None 
-        
+        self._fit_objects = None
+
 
     @property
     def results_df(self):
         return pd.concat( [self._direction_vector , self.fit_df, self._res_df  ], axis = 1 )
-    
+
     @property
-    def fit_df(self) : 
+    def fit_df(self) :
         return pd.DataFrame( index=self._direction_vector.index )
-        
+
     def _fit(self , se):
-        """Method to override in subclass. 
+        """Method to override in subclass.
 
         Should return an object that has the following method :
           - rp_to_x
@@ -72,8 +75,8 @@ class _DirectIformABC(  ) :
           - plot_rp_data
         """
         raise(NotImplementedError())
-        
-        
+
+
     def to_pickle(self , filename):
         """Store to pickle format
 
@@ -88,7 +91,7 @@ class _DirectIformABC(  ) :
     @classmethod
     def from_pickle(cls , filename):
         """Load from pickle
-        
+
         Parameters
         ----------
         filename : str
@@ -102,8 +105,8 @@ class _DirectIformABC(  ) :
         with open(filename , "rb") as f :
             o = pickle.load( f )
         return o
-        
-        
+
+
 
     def _scale_back(self , points_df ) :
         """Scale back the data
@@ -120,38 +123,58 @@ class _DirectIformABC(  ) :
         """
         return pd.DataFrame( index=points_df.index, data = { k : self.std_dict[k] * points_df[k+"_a"] + self.mean_dict[k]  for k in self.dim_names } )
 
-        
-    def fit_projections(self) :
-        """Performs the univariate fits for all the direction vectors. 
-        
-        Results is stored in "_fit_objects"
-        """
-        
-        if self._fit_objects is None : 
-            _array = self._df.loc[ : , self.dim_names_a ].values
-            _dir_vector = self._direction_vector.loc[:, self.dim_names_a].values
-            self._fit_objects = np.empty( (self._n_angles) , dtype = object )
-            for i, r in tqdm(list(enumerate(_dir_vector)), desc = "Fitting projections") :
-                proj  = _array[:,:].dot( r )
-                se =  pd.Series( index = self._df.index.values , data = proj)
-                self._fit_objects[i] = self._fit( se )
-                
+    # def fit_one_projection(array, r, duration):
+    #     proj  = _array[:,:].dot(r)
+    #     return empirical_return_values(se.values, duration)
+
+    # def fit_projections(self) :
+    #     """Performs the univariate fits for all the direction vectors.
+
+    #     Results is stored in "_fit_objects"
+    #     """
+
+    #     if self._fit_objects is None :
+    #         _array = self._df.loc[ : , self.dim_names_a ].values
+    #         _dir_vector = self._direction_vector.loc[:, self.dim_names_a].values
+    #         self._fit_objects = np.empty( (self._n_angles) , dtype = object )
+    #         with ccf.ProcessPoolExecutor() as executor:
+
+
+    #         for i, r in tqdm(list(enumerate(_dir_vector)), desc = "Fitting projections") :
+    #             proj  = _array[:,:].dot( r )
+    #             se =  pd.Series( index = self._df.index.values , data = proj)
+    #             self._fit_objects[i] = self._fit( se )
+
 
     def rp_projections(self, rp_list ):
         """Calculate return values for on each projection, using existing fitted model
-        
+
         Parameters
         ----------
         rp_list : np.ndarray
             List of return period
         """
-        
-        res = np.zeros( ( self._n_angles , len(rp_list) ) )
-        for i in tqdm( np.arange(self._n_angles), desc = "Evaluate RP at each projection" ) :
-            res[i,:] = self._fit_objects[i].rp_to_x( rp_list )
 
-        for i , rp in enumerate(rp_list) :
-            self._res_df[rp] = res[:,i]
+        res = np.zeros( ( self._n_angles , len(rp_list) ) )
+
+        _array = self._df.loc[ : , self.dim_names_a ].values
+        _dir_vector = self._direction_vector.loc[:, self.dim_names_a].values
+
+        for j, rp in enumerate(rp_list):
+            print(f'Calculating contour for {rp} year return period.')
+            with ccf.ProcessPoolExecutor() as executor:
+                self._res_df[rp] = np.asarray(list(tqdm(executor.map(rp_projection_single, repeat(rp), repeat(_array), _dir_vector, repeat(self.duration)), total=_dir_vector.shape[0])))
+
+        #     rp, _array, r, duration
+
+
+        # for i in tqdm( np.arange(self._n_angles), desc = "Evaluate RP at each projection" ) :
+        #     for j, rp in enumerate(rp_list):
+        #         res[i,j] = np.interp(rp, self._fit_objects[i][1], self._fit_objects[i][0])
+        #         # res[i,:] = self._fit_objects[i].rp_to_x( rp_list )
+
+        # for i , rp in enumerate(rp_list) :
+        #     self._res_df[rp] = res[:,i]
 
 
     def _extract_contour( self , rp ) :
@@ -172,11 +195,11 @@ class _DirectIformABC(  ) :
         reflection = np.concatenate( [ np.array( [ np.zeros( (self.ndim) ),] ) , reflection])
         vor = Voronoi( reflection )
         return vor.vertices[ vor.regions[ vor.point_region[0] ] ]
-    
-    
+
+
     def extract_contour( self , rp ):
         """Extract contour (scaled back).
-        
+
         Parameters
         ----------
         rp : Float
@@ -190,9 +213,9 @@ class _DirectIformABC(  ) :
         if rp not in self._res_df.columns :
             self.rp_projections( np.array([rp]) )
         return self._scale_back( pd.DataFrame(  data = self._extract_contour(rp=rp) , columns = self.dim_names_a ) )
-       
-        
-       
+
+
+
     @staticmethod
     def _variable_change(df, output_variables, transform_dict):
         """Add columns according to operation specified in transform_dict
@@ -211,11 +234,10 @@ class _DirectIformABC(  ) :
         df : pd.DataFrame
             The dataframe containing all the output variables
         """
-        for v in output_variables : 
+        for v in output_variables :
             if v not in df.columns :
                 df[v] = transform_dict[v] (df)
         return df
-        
 
     def projected_contour( self , variables, rp, final_variables = None, return_triangulation = False, transform_dict = {} ):
         """Return projection of the contour
@@ -237,24 +259,24 @@ class _DirectIformABC(  ) :
         -------
         pd.DataFrame
             The contour projection
-        """        
-        
-        if final_variables is None : 
+        """
+
+        if final_variables is None :
             final_variables = variables
-        
+
         nd_contour = self.extract_contour(rp)
-        
+
         self._variable_change( nd_contour, variables, transform_dict  )
-       
-        
+
+
         conv_hull = ConvexHull( nd_contour.loc[ : , variables ].values)
-        
-        # Construct dataframe containing only the contour points. 
+
+        # Construct dataframe containing only the contour points.
         contour_points = pd.DataFrame( columns = variables, data = conv_hull.points[conv_hull.vertices] )
-        
-        
+
+
         self._variable_change( contour_points, final_variables, transform_dict  )
-        
+
         output_points = contour_points.loc[: , final_variables]
 
         if return_triangulation :
@@ -262,7 +284,7 @@ class _DirectIformABC(  ) :
             _conv = pd.Series( index = conv_hull.vertices, data = np.arange( len( conv_hull.vertices ) ) )
             simplices = _conv.loc[ conv_hull.simplices.flatten() ].values.reshape( conv_hull.simplices.shape )
             return output_points, simplices
-        else : 
+        else :
             return output_points
 
 
@@ -286,51 +308,51 @@ class _DirectIformABC(  ) :
         pd.DataFrame
             The intersection points. (and optionally the triangulation)
         """
-        
-            
+
+
         nd_contour = self.extract_contour( rp )
-        
+
         _slice = nd_contour
-        
-        for slice_dim, slice_value in zip( slice_dims, slice_values ) : 
-            _slice = slice_convhull_df( _slice , slice_dim = slice_dim, slice_value=slice_value )       
-            
-            
-        if final_variables is not None : 
+
+        for slice_dim, slice_value in zip( slice_dims, slice_values ) :
+            _slice = slice_convhull_df( _slice , slice_dim = slice_dim, slice_value=slice_value )
+
+
+        if final_variables is not None :
             return self._variable_change( _slice, final_variables, transform_dict  ).loc[:,final_variables]
-        else : 
+        else :
             return _slice
-            
-            
-            
+
+
+
 
     #------------ Plotting functions
     def plot_slice_2d(self,  slice_dims , slice_values , rp ,final_variables = None, ax = None, transform_dict = {}, color = "b", **kwargs):
-        
-        if len(slice_dims) != self.ndim-2 : 
+
+        if len(slice_dims) != self.ndim-2 :
             raise(Exception("Not a 2D slice"))
-            
+
         slice_cont = self.sliced_contour( slice_dims , slice_values , rp  )
-        
+
 
         label = kwargs.pop( "label" , f"RP = {rp:} " +  " ".join( f"{d:} = {v:}" for d, v in zip(slice_dims, slice_values)) )
-        
+
         ax = self.plot_2d_convex_hull(slice_cont, final_variables=final_variables, transform_dict=transform_dict, ax=ax, color = color, label=label,**kwargs)
 
-        if final_variables is None : 
+        if final_variables is None :
             ax.set(xlabel = slice_cont.columns[0] , ylabel = slice_cont.columns[1] )
-        else: 
+        else:
             ax.set(xlabel = final_variables[0] , ylabel = final_variables[1] )
         return ax
 
-    
-    
+
+
     def plot_angle_parameters(self , plane, values = None, ax=None, **kwargs) :
 
         if ax is None :
             fig, ax = plt.subplots()
 
-        if values is None : 
+        if values is None :
             values = self._res_df.columns
         id_ = np.isclose( (self.results_df.loc[ : , plane ]**2).sum(axis = 1) , 1 )
         res_df_sub = self.results_df.loc[id_].copy()
@@ -340,10 +362,10 @@ class _DirectIformABC(  ) :
         ax.set(ylabel = "Projected value", xlabel = f"Angle ( atan2( {plane[1]:} , {plane[0]:}) )" )
         return ax
 
-    
-    def plot_projection_2d( self , variables , rp ,final_variables = None, ax = None, transform_dict = {} , backend = "matplotlib", **kwargs ) : 
+
+    def plot_projection_2d( self , variables , rp, final_variables = None, ax = None, transform_dict = {} , backend = "matplotlib", **kwargs ) :
         """Plot the 2D projection of the contour
-        
+
         Parameters
         ----------
         variables : list(str)
@@ -363,10 +385,13 @@ class _DirectIformABC(  ) :
         ax : TYPE
             The figure
         """
-        
+
+        if final_variables is None :
+            final_variables = variables
+
         cont = self.projected_contour(variables, rp, final_variables=final_variables, transform_dict = transform_dict)
         x, y = final_variables
-        
+
         if backend == "matplotlib" :
             if ax is None :
                 fig, ax = plt.subplots()
@@ -377,12 +402,12 @@ class _DirectIformABC(  ) :
             from plotly import express as px
             ax = px.line( data_frame = cont , x = x, y = y )
             return ax
-        
-    
-    
+
+
+
     def plot_projection_3d(self, variables,  rp , ax = None, final_variables = None, transform_dict = {}, backend = "matplotlib", **kwargs):
         """Plot the 3D projection of the contour
-        
+
         Parameters
         ----------
         variables : list(str)
@@ -402,15 +427,15 @@ class _DirectIformABC(  ) :
         ax : TYPE
             The figure
         """
-        
-           
+
+
         cont, tri = self.projected_contour(variables, rp, final_variables=final_variables, transform_dict = transform_dict, return_triangulation = True)
 
         tri = orient_normals( cont.values, tri )
 
         if backend == "plotly" :
             import plotly.figure_factory as ff
-            
+
             fig = ff.create_trisurf(x=cont.iloc[:,0], y=cont.iloc[:,1], z=cont.iloc[:,2],
                                  simplices = tri ,
                                  plot_edges = False, **kwargs)
@@ -419,17 +444,17 @@ class _DirectIformABC(  ) :
             fig.layout.scene.zaxis.title='U10'
             fig.show()
         else :
-            if ax is None: 
+            if ax is None:
                 fig = plt.figure()
-                ax = fig.add_subplot(projection='3d')           
+                ax = fig.add_subplot(projection='3d')
             ax.plot_trisurf(  cont.iloc[:,0], cont.iloc[:,1], cont.iloc[:,2] , triangles = tri, **kwargs )
             ax.set(xlabel = "Hs" , ylabel ="U10" , zlabel = "Tm")
         return ax
 
-        
+
     def plot_data_2d( self, variables , transform_dict = {}, ax = None, backend = "matplotlib", **kwargs ):
         """Plot the 2D projection of the contour
-        
+
         Parameters
         ----------
         variables : list(str)
@@ -445,23 +470,23 @@ class _DirectIformABC(  ) :
         ax : TYPE
             The figure
         """
-                
+
         df = self._variable_change(self._df.copy(), variables, transform_dict)
         x, y = variables
-        
+
         if len(variables) > 2 :
             color = variables[2]
         else:
             color = None
 
-        if backend == "plotly" : 
+        if backend == "plotly" :
             import plotly.express as px
             fig = px.scatter( data_frame = df , x = x , y = y, color = color, **kwargs )
             if ax is not None :
                 import plotly.graph_objects as go
                 fig = go.Figure(data = fig.data + ax.data , layout = ax.layout)
             return fig
-        else : 
+        else :
             if ax is None :
                 fig, ax = plt.subplots()
             sns.scatterplot(data = df, x = x  , y = y  , hue = color , ax = ax, **kwargs)
@@ -471,32 +496,32 @@ class _DirectIformABC(  ) :
     def plot_univariate(self, i_direction, ax=None, fit_kwargs={}, data_kwargs={}):
         if ax is None :
             fig, ax = plt.subplots()
-            
+
         self._fit_objects[i_direction].plot_rp_fit(ax=ax, **fit_kwargs)
         self._fit_objects[i_direction].plot_rp_data(ax=ax, **data_kwargs)
-        
+
         t = [ f"{c:} = {self._direction_vector.loc[ 12, c ]:.2f}" for c in self._direction_vector.columns ]
         ax.set(title = ";".join(t) )
         return ax
-        
-        
-        
-        
+
+
+
+
 
 
     @staticmethod
     def plot_2d_convex_hull(points_df, final_variables = None, ax = None, transform_dict = {}, **kwargs):
-        if ax is None : 
+        if ax is None :
             fig, ax = plt.subplots()
         chull = ConvexHull(points_df.values)
-        
-        if final_variables is not None: 
+
+        if final_variables is not None:
             final_points = _DirectIformABC._variable_change( points_df,  final_variables, transform_dict = transform_dict ).loc[:,final_variables ].values
-        else : 
+        else :
             final_points =  chull.points
-            
+
         label = kwargs.pop("label" , None)
-        for i, d in enumerate(chull.simplices) : 
+        for i, d in enumerate(chull.simplices) :
             ax.plot( final_points[d,0], final_points[d,1], label = label if i == 0 else None, **kwargs )
         return ax
 
@@ -507,7 +532,7 @@ def orient_normals( vertices, faces ) :
     """
     faces = np.array(faces)
     tris = vertices[faces]
-    
+
     # Calculate the normals
     n = np.cross( tris[::,1 ] - tris[::,0]  , tris[::,2 ] - tris[::,0] )
     centers = np.mean( tris - np.mean(vertices) , axis = 1 )
@@ -518,11 +543,11 @@ def orient_normals( vertices, faces ) :
     return faces_oriented
 
 
-        
+
 class DirectIform( _DirectIformABC ) :
     """Specialisation of DirectIform when univariate fits are performed using POT and GP fit
     """
-        
+
     def __init__(self, df, npoints, duration, window_int = None, window = None, threshold_q = 0.9, pot_kwargs = {}):
         """Compute direct IFORM contour, using POT with GP as univariate fit.
 
@@ -540,48 +565,50 @@ class DirectIform( _DirectIformABC ) :
             Minimum window used to decluster the data, in df.index scale. The default is None.
         threshold_q : float, optional
             Quantile to use for the threshold. The default is 0.9.
-            
-            
+
+
         Example
         -------
         >>> diform_2d = DirectIform( df.loc[: , ["Hs**0.5" , "Tm" ] ], npoints = 11 , window_int= 48 , duration = len(df) / (24*365), threshold_q = 0.9  )
         >>> diform_2d.fit_projections( )
         >>> contour_df = diform_2d.extract_contour( rp = 25.0 )
         """
-        
+
         _DirectIformABC.__init__(self , df = df , npoints = npoints )
         self.window_int = window_int
         self.window = window
         self.threshold_q = threshold_q
         self.duration = duration
         self._pot_kwargs = pot_kwargs
-        
+
 
     def _fit(self , se ) :
-        
-        declust = rolling_declustering(se , window_int = self.window_int , window = self.window)
 
-        threshold = np.quantile(declust , self.threshold_q )
+        return empirical_return_values(se.values, self.duration)
 
-        pot = POT_GPD( declust , duration = self.duration, threshold = threshold, **self._pot_kwargs  )
+        # declust = rolling_declustering(se , window_int = self.window_int , window = self.window)
 
-        pot._fit()
+        # threshold = np.quantile(declust , self.threshold_q )
 
-        return pot
+        # pot = POT_GPD( declust , duration = self.duration, threshold = threshold, **self._pot_kwargs  )
+
+        # pot._fit()
+
+        # return pot
 
 
     @property
-    def fit_df(self) : 
-        return pd.DataFrame( index=self._direction_vector.index , data = { "THRESHOLD" : [ pot.threshold for pot in self._fit_objects], 
-                                                                           "SCALE" : [ pot.scale for pot in self._fit_objects], 
-                                                                           "SHAPE" : [ pot.shape for pot in self._fit_objects], 
-                                                                           "NNLF" : [ pot.nnlf for pot in self._fit_objects], 
-                                                                           "KS-PVALUE" : [ pot.ks for pot in self._fit_objects], 
+    def fit_df(self) :
+        return pd.DataFrame( index=self._direction_vector.index , data = { "THRESHOLD" : [ pot.threshold for pot in self._fit_objects],
+                                                                           "SCALE" : [ pot.scale for pot in self._fit_objects],
+                                                                           "SHAPE" : [ pot.shape for pot in self._fit_objects],
+                                                                           "NNLF" : [ pot.nnlf for pot in self._fit_objects],
+                                                                           "KS-PVALUE" : [ pot.ks for pot in self._fit_objects],
                                                                          } )
-    
 
 
-def direction_vector( ndim, npoints, mirror = "add_negative" ) : 
+
+def direction_vector( ndim, npoints, mirror = "add_negative" ) :
     """Compute directtion vector to use for direct IFORM (or direct sampling) calculations
     """
     dims = list(range(ndim))
@@ -590,27 +617,27 @@ def direction_vector( ndim, npoints, mirror = "add_negative" ) :
     res = df.loc[ np.isclose( df["sum"] , 1.0 ) , : ].reset_index().loc[ :,dims ]
 
     n_expected = comb(npoints+ndim-2,ndim-1, exact = True)
-    
-    if len( res ) != n_expected : 
+
+    if len( res ) != n_expected :
         raise(Exception( "Problem in finding the correct number of point on the sphere of radius = 1" ))
-      
+
     # Add negative side if required
-    if type(mirror) == str : 
+    if type(mirror) == str :
         mirror = [mirror for i in range(ndim)]
-    
-    for idim in range(ndim) : 
-        if mirror[idim] == "add_negative" : 
+
+    for idim in range(ndim) :
+        if mirror[idim] == "add_negative" :
             dup = res.loc[ res.loc[ : , idim ] > 0 ].copy()
             dup.loc[: , idim ] *=-1
             res = pd.concat( [res, dup ]  )
     res.reset_index(inplace = True, drop = True)
-            
+
     # Normalize
     res = res.div( ((res**2).sum(axis = 1)**0.5), axis = 0 )
-    
+
     return res
 
-        
+
 def slice_convhull( conv_hull, cut_dim, slice_value ):
     """Calculate intersection point of a convex hull
 
@@ -622,36 +649,36 @@ def slice_convhull( conv_hull, cut_dim, slice_value ):
         The dimension in which the cut is performed
     slice_value : float
         Value at which to slice
-        
+
     Returns
     -------
     intersection_point : np.ndarray
         The intersection point
     """
-        
+
     # Find cutted simplices
     x_min = conv_hull.points[ conv_hull.simplices , cut_dim  ].min(axis = 1)
     x_max = conv_hull.points[ conv_hull.simplices , cut_dim  ].max(axis = 1)
     cutted_simplices = conv_hull.simplices[ np.where( (x_min < slice_value) &  (x_max >= slice_value) ) ]
-    
+
     # Find edges of cutted simplices
     permutation = list(itertools.combinations( np.arange(conv_hull.ndim), 2))
     edges = np.concatenate(  [ cutted_simplices[: , permutation[i]] for i in range(len( permutation )) ] )
-    
+
     # Find cutted edges of cutted simplices
     x_min_e = conv_hull.points[ edges, cut_dim ].min(axis = 1)
     x_max_e = conv_hull.points[ edges, cut_dim ].max(axis = 1)
     cutted_edges = edges[ np.where( (x_min_e < slice_value) &  (x_max_e >= slice_value) ) ]
 
 
-    #Interpolate the intersection points    
+    #Interpolate the intersection points
     alpha =  (conv_hull.points[ cutted_edges[:,1], cut_dim ] - slice_value) / np.diff( conv_hull.points[ cutted_edges, cut_dim ], axis = 1)[:,0]
     intersection_point = np.zeros( (len(cutted_edges) , conv_hull.ndim-1) )
     for idim in range(conv_hull.ndim-1):
-        intersection_point[:, idim] = alpha * conv_hull.points[ cutted_edges[:,0], idim ]   + (1-alpha)*conv_hull.points[ cutted_edges[:,1], idim ] 
-        
+        intersection_point[:, idim] = alpha * conv_hull.points[ cutted_edges[:,0], idim ]   + (1-alpha)*conv_hull.points[ cutted_edges[:,1], idim ]
+
     intersection_point = np.unique( intersection_point, axis = 0 )
-    
+
     return intersection_point
 
 
@@ -659,13 +686,38 @@ def slice_convhull_df( points_df, slice_dim, slice_value ):
     """Same as slice_convhull, but with dataframe as input and output
     """
     conv_hull = ConvexHull( points_df )
-    points = slice_convhull( conv_hull , cut_dim = points_df.columns.get_loc(slice_dim), slice_value=slice_value )       
+    points = slice_convhull( conv_hull , cut_dim = points_df.columns.get_loc(slice_dim), slice_value=slice_value )
     contour_slice = pd.DataFrame( columns = points_df.columns.drop(slice_dim).values , data = points )
     return contour_slice
 
+def rp_projection_single(rp, _array, r, duration):
+    proj  = _array[:,:].dot( r )
+    rvs, rps = empirical_return_values(proj, duration)
+    return np.interp(rp, rps, rvs)
 
+def _is_in_contour_single(xx, AT, bT, eps):
+    return np.all(xx.dot(AT)  + bT < eps, axis=1)
 
+def is_in_contour(df_contour, x):
+    # The hull is defined as all points x for which Ax + b <= 0.
+    # We compare to a small positive value to account for floating
+    # point issues.
+    #
+    # Assuming x is shape (m, d), output is boolean shape (m,).
 
-    
+    # A is shape (f, d) and b is shape (f, 1).
+    hull = ConvexHull(np.asarray(df_contour))
 
-    
+    AT, bT = hull.equations[:, :-1].T, hull.equations[:, -1:].T
+
+    eps = np.finfo(np.float32).eps
+    x = np.asarray(x)
+
+    print('Calculating if points are inside contour.')
+
+    x_chunks = np.array_split(np.asarray(x), x.shape[0]//100)
+
+    with ccf.ProcessPoolExecutor() as executor:
+        res = np.concatenate(list(tqdm(executor.map(_is_in_contour_single, x_chunks, repeat(AT), repeat(bT), repeat(eps)), total=len(x_chunks))))
+
+    return res

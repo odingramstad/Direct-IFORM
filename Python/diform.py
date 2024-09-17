@@ -12,6 +12,7 @@ from matplotlib import pyplot as plt
 from stat_utils import empirical_return_values
 import concurrent.futures as ccf
 from itertools import repeat
+from scipy.spatial._qhull import QhullError
 
 
 class _DirectIformABC(  ) :
@@ -193,7 +194,11 @@ class _DirectIformABC(  ) :
         from scipy.spatial import Voronoi
         reflection = 2 * self._direction_vector.values * self._res_df.loc[:,rp].values[: , None]
         reflection = np.concatenate( [ np.array( [ np.zeros( (self.ndim) ),] ) , reflection])
-        vor = Voronoi( reflection )
+        try:
+            vor = Voronoi( reflection )
+        except QhullError:
+            vor = Voronoi( reflection, qhull_options='Qbb Qc Qz Qx')
+
         return vor.vertices[ vor.regions[ vor.point_region[0] ] ]
 
 
@@ -239,7 +244,7 @@ class _DirectIformABC(  ) :
                 df[v] = transform_dict[v] (df)
         return df
 
-    def projected_contour( self , variables, rp, final_variables = None, return_triangulation = False, transform_dict = {} ):
+    def projected_contour(self, variables, rp, final_variables = None, return_triangulation = False, transform_dict = {} ):
         """Return projection of the contour
 
         Parameters
@@ -541,7 +546,6 @@ def orient_normals( vertices, faces ) :
     faces_oriented[ id_ , 2 ]  = faces[ id_ , 1 ]
     faces_oriented[ id_ , 1 ]  = faces[ id_ , 2 ]
     return faces_oriented
-
 
 
 class DirectIform( _DirectIformABC ) :

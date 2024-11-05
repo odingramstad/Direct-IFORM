@@ -12,7 +12,6 @@ from matplotlib import pyplot as plt
 from stat_utils import empirical_return_values
 import concurrent.futures as ccf
 from itertools import repeat
-from scipy.spatial._qhull import QhullError
 
 
 class _DirectIformABC(  ) :
@@ -194,11 +193,7 @@ class _DirectIformABC(  ) :
         from scipy.spatial import Voronoi
         reflection = 2 * self._direction_vector.values * self._res_df.loc[:,rp].values[: , None]
         reflection = np.concatenate( [ np.array( [ np.zeros( (self.ndim) ),] ) , reflection])
-        try:
-            vor = Voronoi( reflection )
-        except QhullError:
-            vor = Voronoi( reflection, qhull_options='Qbb Qc Qz Qx')
-
+        vor = Voronoi( reflection )
         return vor.vertices[ vor.regions[ vor.point_region[0] ] ]
 
 
@@ -244,7 +239,7 @@ class _DirectIformABC(  ) :
                 df[v] = transform_dict[v] (df)
         return df
 
-    def projected_contour(self, variables, rp, final_variables = None, return_triangulation = False, transform_dict = {} ):
+    def projected_contour( self , variables, rp, final_variables = None, return_triangulation = False, transform_dict = {} ):
         """Return projection of the contour
 
         Parameters
@@ -548,6 +543,7 @@ def orient_normals( vertices, faces ) :
     return faces_oriented
 
 
+
 class DirectIform( _DirectIformABC ) :
     """Specialisation of DirectIform when univariate fits are performed using POT and GP fit
     """
@@ -719,7 +715,7 @@ def is_in_contour(df_contour, x):
 
     print('Calculating if points are inside contour.')
 
-    x_chunks = np.array_split(np.asarray(x), x.shape[0]//100)
+    x_chunks = np.array_split(np.asarray(x), x.shape[0]//100 + 1)
 
     with ccf.ProcessPoolExecutor() as executor:
         res = np.concatenate(list(tqdm(executor.map(_is_in_contour_single, x_chunks, repeat(AT), repeat(bT), repeat(eps)), total=len(x_chunks))))
